@@ -20,3 +20,9 @@ void Backlight_adjustment_event_cb(lv_event_t * e);
 
 void Lvgl_Example1(void);
 void LVGL_Backlight_adjustment(uint8_t Backlight);
+
+// Update UI mode and background based on machine states
+void UI_SetStates(bool heater_on, bool steam_on, bool shot_on);
+void UI_UpdateTemp(float current_c, float set_c, bool steam_mode);
+void UI_UpdatePressure(float bar);
+void UI_SetHeaterSwitch(bool on);

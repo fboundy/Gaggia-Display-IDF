@@ -60,9 +60,9 @@ void app_main(void)
     // lv_demo_music();
 
     while (1) {
-        // raise the task priority of LVGL and/or reduce the handler period can improve the performance
-        vTaskDelay(pdMS_TO_TICKS(10));
-        // The task running lv_timer_handler should have lower priority than that running `lv_tick_inc`
+        // Process LVGL timers and tasks
         lv_timer_handler();
+        // Yield to keep WDT happy and let other tasks run (MQTT, WiFi, IDLE)
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }

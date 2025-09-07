@@ -3,6 +3,13 @@
 #include "esp_netif.h"
 #include "secrets.h"
 #include "mqtt_client.h"
+// UI update APIs
+extern void UI_SetStates(bool heater_on, bool steam_on, bool shot_on);
+extern void UI_UpdateTemp(float current_c, float set_c, bool steam_mode);
+extern void UI_UpdatePressure(float bar);
+extern void UI_SetHeaterSwitch(bool on);
+// UI state update bridge
+extern void UI_SetStates(bool heater_on, bool steam_on, bool shot_on);
 
 uint16_t BLE_NUM = 0;
 uint16_t WIFI_NUM = 0;
@@ -251,6 +258,8 @@ uint16_t BLE_Scan(void)
 
 // -------------------- MQTT client (subscriber/publisher) --------------------
 static esp_mqtt_client_handle_t s_mqtt = NULL;
+static bool s_heater_on = false, s_steam_on = false, s_shot_on = false;
+static float s_set_temp_c = 0.0f, s_cur_temp_c = 0.0f, s_pressure_bar = 0.0f;
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -271,13 +280,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     char d_copy[256];
     switch (event->event_id) {
     case MQTT_EVENT_CONNECTED:
-        printf("MQTT connected\r\n");
+        // Connected
         // Subscribe to all required state topics under gaggia_classic/{GAGGIA_ID}/.../state
         for (size_t i = 0; i < (sizeof(k_topics) / sizeof(k_topics[0])); ++i) {
             int n = snprintf(topic_buf, sizeof(topic_buf), "gaggia_classic/%s/%s/state", GAGGIA_ID, k_topics[i]);
             if (n > 0 && n < (int)sizeof(topic_buf)) {
                 esp_mqtt_client_subscribe(event->client, topic_buf, 1);
-                printf("MQTT subscribed: %s\r\n", topic_buf);
             }
         }
         #ifdef MQTT_LWT_TOPIC
@@ -295,7 +303,34 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             int dl = event->data_len < (int)sizeof(d_copy) - 1 ? event->data_len : (int)sizeof(d_copy) - 1;
             memcpy(t_copy, event->topic, tl); t_copy[tl] = '\0';
             memcpy(d_copy, event->data, dl); d_copy[dl] = '\0';
-            printf("MQTT state [%s] = %s\r\n", t_copy, d_copy);
+            // Expect: gaggia_classic/{GAGGIA_ID}/{key}/state
+            // Extract {key}
+            char *last_slash = strrchr(t_copy, '/');
+            if (last_slash && last_slash != t_copy) {
+                *last_slash = '\0'; // strip "/state"
+                char *key = strrchr(t_copy, '/');
+                if (key) {
+                    key++; // move past '/'
+                    // Normalize payload for ON/OFF
+                    bool is_on = (strcasecmp(d_copy, "ON") == 0 || strcmp(d_copy, "1") == 0 || strcasecmp(d_copy, "true") == 0);
+                    if (strcmp(key, "heater") == 0) {
+                        s_heater_on = is_on; UI_SetHeaterSwitch(is_on);
+                    } else if (strcmp(key, "steam_state") == 0) {
+                        s_steam_on = is_on;
+                    } else if (strcmp(key, "shot_state") == 0) {
+                        s_shot_on = is_on;
+                    } else if (strcmp(key, "set_temp") == 0 || strcmp(key, "brew_setpoint") == 0 || strcmp(key, "steam_setpoint") == 0) {
+                        s_set_temp_c = strtof(d_copy, NULL);
+                    } else if (strcmp(key, "current_temp") == 0) {
+                        s_cur_temp_c = strtof(d_copy, NULL);
+                    } else if (strcmp(key, "pressure") == 0) {
+                        s_pressure_bar = strtof(d_copy, NULL);
+                        UI_UpdatePressure(s_pressure_bar);
+                    }
+                    UI_SetStates(s_heater_on, s_steam_on, s_shot_on);
+                    UI_UpdateTemp(s_cur_temp_c, s_set_temp_c, s_steam_on);
+                }
+            }
         }
         break;
     default:

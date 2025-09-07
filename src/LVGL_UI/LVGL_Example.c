@@ -1,4 +1,6 @@
 #include "LVGL_Example.h"
+#include "secrets.h"
+#include "Wireless.h"
 
 
 /**********************
@@ -43,6 +45,100 @@ lv_obj_t * Board_angle;
 lv_obj_t * RTC_Time;
 lv_obj_t * Wireless_Scan;
 lv_obj_t * Backlight_slider;
+
+// Status label at the top and state variables
+static lv_obj_t * g_status_label = NULL;
+static bool g_heater_on = false;
+static bool g_steam_on = false;
+static bool g_shot_on = false;
+// Dashboard widgets
+static lv_obj_t * g_meter_temp = NULL;
+static lv_meter_scale_t * g_temp_scale = NULL;
+static lv_meter_indicator_t * g_temp_needle = NULL;
+static lv_meter_indicator_t * g_temp_set_band = NULL; // +/-5C band
+
+static lv_obj_t * g_meter_press = NULL;
+static lv_meter_scale_t * g_press_scale = NULL;
+static lv_meter_indicator_t * g_press_needle = NULL;
+static lv_meter_indicator_t * g_press_crit = NULL; // 9-10 bar band
+
+static lv_obj_t * g_label_shot = NULL;
+static lv_obj_t * g_switch_heater = NULL;
+static TickType_t g_shot_start = 0;
+
+static void heater_switch_event_cb(lv_event_t * e);
+
+static void ui_apply_mode(void *unused)
+{
+  LV_UNUSED(unused);
+  const char *text = "STANDBY";
+  lv_color_t color = lv_color_hex(0x1E88E5); // blue
+
+  if (g_heater_on) {
+    if (g_shot_on) {
+      text = "SHOT";
+      color = lv_color_hex(0xFDD835); // yellow
+    } else if (g_steam_on) {
+      text = "STEAM";
+      color = lv_color_hex(0xE53935); // red
+    } else {
+      text = "BREW";
+      color = lv_color_hex(0x43A047); // green
+    }
+  }
+
+  if (g_status_label) {
+    lv_label_set_text(g_status_label, text);
+  }
+  lv_obj_set_style_bg_color(lv_scr_act(), color, 0);
+}
+
+void UI_SetStates(bool heater_on, bool steam_on, bool shot_on)
+{
+  g_heater_on = heater_on;
+  g_steam_on = steam_on;
+  // handle shot timer start/stop
+  if (!g_shot_on && shot_on) {
+    g_shot_start = xTaskGetTickCount();
+  }
+  g_shot_on = shot_on;
+  lv_async_call(ui_apply_mode, NULL);
+}
+
+void UI_SetHeaterSwitch(bool on)
+{
+  if (g_switch_heater) {
+    if (on) lv_obj_add_state(g_switch_heater, LV_STATE_CHECKED);
+    else    lv_obj_clear_state(g_switch_heater, LV_STATE_CHECKED);
+  }
+}
+
+void UI_UpdatePressure(float bar)
+{
+  if (g_press_needle && g_press_scale) {
+    if (bar < 0) bar = 0;
+    if (bar > 12) bar = 12;
+    lv_meter_set_indicator_value(g_meter_press, g_press_needle, bar);
+  }
+}
+
+void UI_UpdateTemp(float current_c, float set_c, bool steam_mode)
+{
+  // Adjust scale based on mode
+  if (g_temp_scale) {
+    if (steam_mode) lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 110, 160, 270, 135);
+    else            lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 60, 110, 270, 135);
+  }
+  if (g_temp_needle) {
+    lv_meter_set_indicator_value(g_meter_temp, g_temp_needle, current_c);
+  }
+  if (g_temp_set_band) {
+    float start = set_c - 5.0f;
+    float end = set_c + 5.0f;
+    lv_meter_set_indicator_start_value(g_meter_temp, g_temp_set_band, start);
+    lv_meter_set_indicator_end_value(g_meter_temp, g_temp_set_band, end);
+  }
+}
 
 
 void Lvgl_Example1(void){
@@ -145,7 +241,22 @@ void Lvgl_Example1(void){
     #endif
   }
 
-  lv_obj_t * t1 = lv_tabview_add_tab(tv, "Onboard");
+  // Create a top status label
+  g_status_label = lv_label_create(lv_scr_act());
+  static lv_style_t style_big_title; lv_style_init(&style_big_title);
+#if LV_FONT_MONTSERRAT_32
+  lv_style_set_text_font(&style_big_title, &lv_font_montserrat_32);
+#elif LV_FONT_MONTSERRAT_24
+  lv_style_set_text_font(&style_big_title, &lv_font_montserrat_24);
+#else
+  lv_style_set_text_font(&style_big_title, LV_FONT_DEFAULT);
+#endif
+  lv_style_set_text_opa(&style_big_title, LV_OPA_COVER);
+  lv_obj_add_style(g_status_label, &style_big_title, 0);
+  lv_obj_align(g_status_label, LV_ALIGN_TOP_MID, 0, 6);
+  lv_label_set_text(g_status_label, "STANDBY");
+
+  lv_obj_t * t1 = lv_tabview_add_tab(tv, "");
   // lv_obj_t * t2 = lv_tabview_add_tab(tv, "Buzzer");
   // lv_obj_t * t3 = lv_tabview_add_tab(tv, "Shop");
   
@@ -211,10 +322,49 @@ void Lvgl_Example1_close(void)
 
 static void Onboard_create(lv_obj_t * parent)
 {
+  // declare dummies to satisfy old unreachable code
+  lv_obj_t * panel1 = NULL;
+  // Replace demo UI with dashboard
+  lv_obj_clean(parent);
+  // Temperature meter
+  g_meter_temp = lv_meter_create(parent);
+  lv_obj_set_size(g_meter_temp, 220, 220);
+  lv_obj_align(g_meter_temp, LV_ALIGN_LEFT_MID, 40, -10);
+  g_temp_scale = lv_meter_add_scale(g_meter_temp);
+  lv_meter_set_scale_ticks(g_meter_temp, g_temp_scale, 41, 2, 10, lv_palette_main(LV_PALETTE_GREY));
+  lv_meter_set_scale_major_ticks(g_meter_temp, g_temp_scale, 5, 4, 15, lv_color_black(), 10);
+  lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 60, 110, 270, 135);
+  g_temp_needle = lv_meter_add_needle_line(g_meter_temp, g_temp_scale, 4, lv_palette_main(LV_PALETTE_BLUE), -10);
+  g_temp_set_band = lv_meter_add_arc(g_meter_temp, g_temp_scale, 10, lv_palette_main(LV_PALETTE_RED), 0);
 
-  /*Create a panel*/
-  lv_obj_t * panel1 = lv_obj_create(parent);
-  lv_obj_set_height(panel1, LV_SIZE_CONTENT);
+  // Pressure meter
+  g_meter_press = lv_meter_create(parent);
+  lv_obj_set_size(g_meter_press, 220, 220);
+  lv_obj_align(g_meter_press, LV_ALIGN_RIGHT_MID, -40, -10);
+  g_press_scale = lv_meter_add_scale(g_meter_press);
+  lv_meter_set_scale_ticks(g_meter_press, g_press_scale, 25, 2, 10, lv_palette_main(LV_PALETTE_GREY));
+  lv_meter_set_scale_major_ticks(g_meter_press, g_press_scale, 5, 4, 15, lv_color_black(), 10);
+  lv_meter_set_scale_range(g_meter_press, g_press_scale, 0, 12, 270, 135);
+  g_press_needle = lv_meter_add_needle_line(g_meter_press, g_press_scale, 4, lv_palette_main(LV_PALETTE_BLUE), -10);
+  g_press_crit = lv_meter_add_arc(g_meter_press, g_press_scale, 10, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_meter_set_indicator_start_value(g_meter_press, g_press_crit, 9);
+  lv_meter_set_indicator_end_value(g_meter_press, g_press_crit, 10);
+
+  // Shot time label
+  g_label_shot = lv_label_create(parent);
+  lv_obj_align(g_label_shot, LV_ALIGN_BOTTOM_MID, 0, -10);
+  lv_label_set_text(g_label_shot, "Shot: 00.0s");
+
+  // Heater switch
+  g_switch_heater = lv_switch_create(parent);
+  lv_obj_align(g_switch_heater, LV_ALIGN_BOTTOM_LEFT, 20, -10);
+  lv_obj_add_event_cb(g_switch_heater, heater_switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+  lv_obj_t *lbl = lv_label_create(parent);
+  lv_label_set_text(lbl, "Heater");
+  lv_obj_align_to(lbl, g_switch_heater, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+
+  auto_step_timer = lv_timer_create(example1_increase_lvgl_tick, 100, NULL);
+  return;
 
   lv_obj_t * panel1_title = lv_label_create(panel1);
   lv_label_set_text(panel1_title, "Onboard parameter");
@@ -351,55 +501,20 @@ static void Onboard_create(lv_obj_t * parent)
 
   lv_obj_set_grid_dsc_array(parent, grid_main_col_dsc, grid_main_row_dsc);
 
-  lv_obj_set_grid_cell(panel1, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_START, 0, 1);
-  lv_obj_set_grid_dsc_array(panel1, grid_2_col_dsc, grid_2_row_dsc);
-  lv_obj_set_grid_cell(panel1_title, LV_GRID_ALIGN_CENTER, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
-  lv_obj_set_grid_cell(SD_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 2, 1);
-  lv_obj_set_grid_cell(SD_Size, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 3, 1);
-  lv_obj_set_grid_cell(Flash_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 4, 1);
-  lv_obj_set_grid_cell(FlashSize, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 5, 1);
-  lv_obj_set_grid_cell(BAT_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 6, 1);
-  lv_obj_set_grid_cell(BAT_Volts, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 7, 1);
-  lv_obj_set_grid_cell(angle_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 8, 1);
-  lv_obj_set_grid_cell(Board_angle, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 9, 1);
-  lv_obj_set_grid_cell(Time_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 10, 1);
-  lv_obj_set_grid_cell(RTC_Time, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 11, 1);
-  lv_obj_set_grid_cell(Wireless_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 12, 1);
-  lv_obj_set_grid_cell(Wireless_Scan, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 13, 1);
-  lv_obj_set_grid_cell(Backlight_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 14, 1);
-  lv_obj_set_grid_cell(Backlight_slider, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 15, 1);
-
-  lv_obj_set_grid_cell(panel2, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 1, 1);
-  lv_obj_set_grid_dsc_array(panel2, grid_1_col_dsc, grid_1_row_dsc);
-  lv_obj_set_grid_cell(panel2_title, LV_GRID_ALIGN_CENTER, 2, 1, LV_GRID_ALIGN_CENTER, 0, 1);
-  lv_obj_set_grid_cell(led, LV_GRID_ALIGN_CENTER, 1, 1, LV_GRID_ALIGN_CENTER, 2, 1);
-  lv_obj_set_grid_cell(sw, LV_GRID_ALIGN_CENTER, 3, 1, LV_GRID_ALIGN_CENTER, 2, 1);
-
-  
-  auto_step_timer = lv_timer_create(example1_increase_lvgl_tick, 100, NULL);
+  // old grid layout removed
 }
 
 void example1_increase_lvgl_tick(lv_timer_t * t)
 {
-  char buf[100]; 
-  
-  snprintf(buf, sizeof(buf), "%ld MB\r\n", SDCard_Size);
-  lv_textarea_set_placeholder_text(SD_Size, buf);
-  snprintf(buf, sizeof(buf), "%ld MB\r\n", Flash_Size);
-  lv_textarea_set_placeholder_text(FlashSize, buf);
-  snprintf(buf, sizeof(buf), "%.2f V\r\n", BAT_analogVolts);
-  lv_textarea_set_placeholder_text(BAT_Volts, buf);
-  snprintf(buf, sizeof(buf), "X:%.2f  Y:%.2f  Z:%.2f\r\n", Accel.x, Accel.y, Accel.z);
-  lv_textarea_set_placeholder_text(Board_angle, buf);
-  snprintf(buf, sizeof(buf), "%d.%d.%d   %d:%d:%d\r\n",datetime.year,datetime.month,datetime.day,datetime.hour,datetime.minute,datetime.second);
-  lv_textarea_set_placeholder_text(RTC_Time, buf);
-  if(Scan_finish)
-    snprintf(buf, sizeof(buf), "WIFI: %d    BLE: %d    ..Scan Finish.\r\n",WIFI_NUM,BLE_NUM);
-  else
-    snprintf(buf, sizeof(buf), "WIFI: %d    BLE: %d\r\n",WIFI_NUM,BLE_NUM);
-  lv_textarea_set_placeholder_text(Wireless_Scan, buf);
-  lv_slider_set_value(Backlight_slider, LCD_Backlight, LV_ANIM_ON); 
-  LVGL_Backlight_adjustment(LCD_Backlight);
+  LV_UNUSED(t);
+  // Update shot time if active
+  if (g_shot_on && g_label_shot) {
+    TickType_t now = xTaskGetTickCount();
+    uint32_t ms = (now - g_shot_start) * portTICK_PERIOD_MS;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Shot: %lu.%lus", (unsigned long)(ms/1000), (unsigned long)((ms%1000)/100));
+    lv_label_set_text(g_label_shot, buf);
+  }
 }
 
 
@@ -408,6 +523,18 @@ void example1_increase_lvgl_tick(lv_timer_t * t)
 
 static void ta_event_cb(lv_event_t * e)
 {
+}
+
+static void heater_switch_event_cb(lv_event_t * e)
+{
+  if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+  lv_obj_t *sw = lv_event_get_target(e);
+  bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+  // Publish to MQTT
+  extern int MQTT_Publish(const char*, const char*, int, bool);
+  char topic[96];
+  snprintf(topic, sizeof(topic), "gaggia_classic/%s/heater/state", GAGGIA_ID);
+  MQTT_Publish(topic, on ? "ON":"OFF", 1, true);
 }
 
 

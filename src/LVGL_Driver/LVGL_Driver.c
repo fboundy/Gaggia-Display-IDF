@@ -9,7 +9,10 @@ esp_timer_handle_t lvgl_tick_timer = NULL;
 
 
 static void *buf1 = NULL;
-static void *buf2 = NULL;             
+static void *buf2 = NULL;
+
+// Number of display lines stored in each LVGL draw buffer
+#define LVGL_BUFFER_LINES 100
 
 
 #if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
@@ -71,12 +74,12 @@ void LVGL_Init(void)
     lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES);
 #else
     ESP_LOGI(LVGL_TAG, "Allocate separate LVGL draw buffers from PSRAM");
-    buf1 = heap_caps_malloc(EXAMPLE_LCD_H_RES * 100 * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    buf1 = heap_caps_malloc(EXAMPLE_LCD_H_RES * LVGL_BUFFER_LINES * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     assert(buf1);
-    buf2 = heap_caps_malloc(EXAMPLE_LCD_H_RES * 100 * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    buf2 = heap_caps_malloc(EXAMPLE_LCD_H_RES * LVGL_BUFFER_LINES * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     assert(buf2);
-    // initialize LVGL draw buffers
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES);
+    // initialize LVGL draw buffers (LVGL_BUFFER_LINES lines each)
+    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * LVGL_BUFFER_LINES);
 #endif // CONFIG_EXAMPLE_DOUBLE_FB
 
     ESP_LOGI(LVGL_TAG, "Register display driver to LVGL");

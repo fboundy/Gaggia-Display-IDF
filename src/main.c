@@ -69,6 +69,9 @@ void app_main(void)
 
     // Task Watchdog is auto-initialized by Kconfig (CONFIG_ESP_TASK_WDT_INIT=y)
     // Just register tasks that need monitoring (e.g., in gui_task)
+    // Remove idle task on core 1 from WDT so GUI task can fully utilize CPU1
+    // without triggering the watchdog due to the idle task not running.
+    esp_task_wdt_delete(xTaskGetIdleTaskHandleForCPU(1));
 
     Wireless_Init();
     Driver_Init();

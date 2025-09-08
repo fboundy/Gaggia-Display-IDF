@@ -1,6 +1,8 @@
 #include "LVGL_Example.h"
 #include "secrets.h"
 #include "Wireless.h"
+#include <math.h>
+#include <stdint.h>
 
 
 /**********************
@@ -67,6 +69,15 @@ static lv_obj_t * g_switch_heater = NULL;
 static TickType_t g_shot_start = 0;
 
 static void heater_switch_event_cb(lv_event_t * e);
+static void ui_apply_pressure(void *unused);
+static void ui_apply_temp(void *unused);
+static void ui_apply_heater_switch(void *p_on);
+
+// Pending values set from non-GUI tasks; applied on GUI context via lv_async_call
+static float g_pending_pressure = NAN;
+static float g_pending_cur_temp = NAN;
+static float g_pending_set_temp = NAN;
+static bool  g_pending_steam = false;
 
 static void ui_apply_mode(void *unused)
 {
@@ -107,37 +118,25 @@ void UI_SetStates(bool heater_on, bool steam_on, bool shot_on)
 
 void UI_SetHeaterSwitch(bool on)
 {
-  if (g_switch_heater) {
-    if (on) lv_obj_add_state(g_switch_heater, LV_STATE_CHECKED);
-    else    lv_obj_clear_state(g_switch_heater, LV_STATE_CHECKED);
-  }
+  // Run UI change on LVGL thread
+  // Encode bool in pointer (0 or 1); safe on this platform
+  lv_async_call(ui_apply_heater_switch, (void*)(uintptr_t)(on ? 1 : 0));
 }
 
 void UI_UpdatePressure(float bar)
 {
-  if (g_press_needle && g_press_scale) {
-    if (bar < 0) bar = 0;
-    if (bar > 12) bar = 12;
-    lv_meter_set_indicator_value(g_meter_press, g_press_needle, bar);
-  }
+  // Defer to GUI thread to avoid cross-thread LVGL calls
+  g_pending_pressure = bar;
+  lv_async_call(ui_apply_pressure, NULL);
 }
 
 void UI_UpdateTemp(float current_c, float set_c, bool steam_mode)
 {
-  // Adjust scale based on mode
-  if (g_temp_scale) {
-    if (steam_mode) lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 110, 160, 270, 135);
-    else            lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 60, 110, 270, 135);
-  }
-  if (g_temp_needle) {
-    lv_meter_set_indicator_value(g_meter_temp, g_temp_needle, current_c);
-  }
-  if (g_temp_set_band) {
-    float start = set_c - 5.0f;
-    float end = set_c + 5.0f;
-    lv_meter_set_indicator_start_value(g_meter_temp, g_temp_set_band, start);
-    lv_meter_set_indicator_end_value(g_meter_temp, g_temp_set_band, end);
-  }
+  // Defer to GUI thread to avoid cross-thread LVGL calls
+  g_pending_cur_temp = current_c;
+  g_pending_set_temp = set_c;
+  g_pending_steam    = steam_mode;
+  lv_async_call(ui_apply_temp, NULL);
 }
 
 
@@ -304,8 +303,10 @@ void Lvgl_Example1_close(void)
   /*Delete all animation*/
   lv_anim_del(NULL, NULL);
 
-  lv_timer_del(meter2_timer);
-  meter2_timer = NULL;
+  if (meter2_timer) {
+    lv_timer_del(meter2_timer);
+    meter2_timer = NULL;
+  }
 
   lv_obj_clean(lv_scr_act());
 
@@ -465,43 +466,51 @@ static void Onboard_create(lv_obj_t * parent)
   static lv_coord_t grid_main_row_dsc[] = {LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_TEMPLATE_LAST};
 
 
-  /*Create the top panel*/
-  static lv_coord_t grid_1_col_dsc[] = {LV_GRID_FR(4),  LV_GRID_FR(1),  LV_GRID_FR(1),  LV_GRID_FR(1), LV_GRID_FR(4), LV_GRID_TEMPLATE_LAST};
-  static lv_coord_t grid_1_row_dsc[] = {
-    LV_GRID_CONTENT, /*Name*/
-    LV_GRID_CONTENT, /*Description*/
-    LV_GRID_CONTENT, /*Email*/
-    LV_GRID_CONTENT, /*Email*/
-    LV_GRID_TEMPLATE_LAST
-  };
-
-  static lv_coord_t grid_2_col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(5), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
-  static lv_coord_t grid_2_row_dsc[] = {
-    LV_GRID_CONTENT,  /*Title*/
-    5,                /*Separator*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_CONTENT,  /*Box title*/
-    40,               /*Box*/
-    LV_GRID_TEMPLATE_LAST
-  };
-
-
   lv_obj_set_grid_dsc_array(parent, grid_main_col_dsc, grid_main_row_dsc);
 
   // old grid layout removed
+}
+
+static void ui_apply_heater_switch(void *p_on)
+{
+  bool on = ((uintptr_t)p_on) ? true : false;
+  if (g_switch_heater) {
+    if (on) lv_obj_add_state(g_switch_heater, LV_STATE_CHECKED);
+    else    lv_obj_clear_state(g_switch_heater, LV_STATE_CHECKED);
+  }
+}
+
+static void ui_apply_pressure(void *unused)
+{
+  LV_UNUSED(unused);
+  float bar = g_pending_pressure;
+  if (!isnanf(bar) && g_press_needle && g_press_scale) {
+    if (bar < 0) bar = 0;
+    if (bar > 12) bar = 12;
+    lv_meter_set_indicator_value(g_meter_press, g_press_needle, bar);
+  }
+}
+
+static void ui_apply_temp(void *unused)
+{
+  LV_UNUSED(unused);
+  float current_c = g_pending_cur_temp;
+  float set_c     = g_pending_set_temp;
+  bool steam_mode = g_pending_steam;
+
+  if (g_temp_scale) {
+    if (steam_mode) lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 110, 160, 270, 135);
+    else            lv_meter_set_scale_range(g_meter_temp, g_temp_scale, 60, 110, 270, 135);
+  }
+  if (g_temp_needle) {
+    lv_meter_set_indicator_value(g_meter_temp, g_temp_needle, current_c);
+  }
+  if (g_temp_set_band) {
+    float start = set_c - 5.0f;
+    float end = set_c + 5.0f;
+    lv_meter_set_indicator_start_value(g_meter_temp, g_temp_set_band, start);
+    lv_meter_set_indicator_end_value(g_meter_temp, g_temp_set_band, end);
+  }
 }
 
 void example1_increase_lvgl_tick(lv_timer_t * t)

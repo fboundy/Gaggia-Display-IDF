@@ -7,11 +7,6 @@
 #include <stdlib.h>
 
 uint16_t BLE_NUM = 0;
-uint16_t WIFI_NUM = 0;
-bool Scan_finish = 0;
-
-bool WiFi_Scan_Finish = 0;
-bool BLE_Scan_Finish = 0;
 void Wireless_Init(void)
 {
     // Initialize NVS.
@@ -93,17 +88,6 @@ void WIFI_Init(void *arg)
 
     vTaskDelete(NULL);
 }
-uint16_t WIFI_Scan(void)
-{
-    uint16_t ap_count = 0;
-    esp_wifi_scan_start(NULL, true);
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
-    WiFi_Scan_Finish = 1;
-    if (BLE_Scan_Finish == 1)
-        Scan_finish = 1;
-    return ap_count;
-}
-
 #define GATTC_TAG "GATTC_TAG"
 #define SCAN_DURATION 5
 #define MAX_DISCOVERED_DEVICES 100
@@ -274,9 +258,6 @@ uint16_t BLE_Scan(void)
     printf("Stopping BLE scan...\n");
     // ESP_ERROR_CHECK(esp_ble_gap_stop_scanning());
     ESP_ERROR_CHECK(esp_ble_dtm_stop());
-    BLE_Scan_Finish = 1;
-    if (WiFi_Scan_Finish == 1)
-        Scan_finish = 1;
     return BLE_NUM;
 }
 

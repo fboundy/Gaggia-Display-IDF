@@ -18,12 +18,9 @@
 
 
 extern uint16_t BLE_NUM;
-extern uint16_t WIFI_NUM;
-extern bool Scan_finish;
 
 void Wireless_Init(void);
 void WIFI_Init(void *arg);
-uint16_t WIFI_Scan(void);
 void BLE_Init(void *arg);
 uint16_t BLE_Scan(void);
 
